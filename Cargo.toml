@@ -1,0 +1,6 @@
+[package]
+name = "twisted_banana"
+version = "0.1.0"
+authors = ["Georges Racinet <georges@racinet.fr>"]
+
+[dependencies]

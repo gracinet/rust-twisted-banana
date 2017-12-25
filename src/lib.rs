@@ -10,11 +10,6 @@ pub enum Element {
     List(Vec<Element>), // 0x80
 }
 
-/// Base128 used for length
-fn b128dec(first: u8, second: u8) -> usize {
-    second as usize * 128 + first as usize
-}
-
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum DecodeError {
     NoType,
@@ -321,8 +316,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_b128dec() {
-        assert_eq!(b128dec(0x42, 0x24), 4674);
-    }
 }

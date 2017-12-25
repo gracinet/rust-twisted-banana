@@ -2,26 +2,48 @@
 
 use std::mem::transmute;
 
+/// Represent Banana extension profiles
+pub trait Profile: Sized {
+    /// Attempt to decode as an extension element.
+    /// preamble is made of the bytes that occur before the delimiter.
+    /// It is either a length (as base128 bytes), or has special meaning
+    fn decode<'a>(
+        delimiter: u8,
+        preamble: &'a [u8],
+        full_msg: &'a [u8],
+    ) -> Result<(Self, &'a [u8]), DecodeError>;
+}
+
 #[derive(Debug, PartialEq, Clone)]
-pub enum Element {
+pub enum Element<P: Profile> {
     Integer(i32), // split into Integer (0x81) and Negative Integer (0x83)
     String(Vec<u8>), // 0x82
     Float(f64), // 0x84
-    List(Vec<Element>), // 0x80
+    List(Vec<Element<P>>), // 0x80
+    Extension(P),
+}
+
+/// Bare Banana message protocol
+pub type Banana = Element<NoneProfile>;
+
+/// The 'none', a.k.a default extension profile
+/// it adds nothing on top of vanilla banana.
+#[derive(Debug, PartialEq, Clone)]
+pub enum NoneProfile {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum DecodeError {
     NoType,
     Empty,
-    UnknownType,
+    UnknownType(u8),
     OverFlow(Vec<u8>),
     TooShort(usize, usize), // contains (expected, actual)
     Invalid(String),
 }
 
 
-impl Element {
+impl<P: Profile> Element<P> {
     /// Extract length part and type byte of Banana element
     /// According to spec, the type byte is the first with higher bit set.
     /// The length can be used to actually encode contents, so that
@@ -125,8 +147,17 @@ impl Element {
     /// RAM. Check what applications (e.g., buildbot) actually do for big communications.
     /// stream within the protocol or outside of it ?
     pub fn from_bytes_rem<'a>(bytes: &'a [u8]) -> Result<(Self, &'a [u8]), DecodeError> {
-        let (length_bytes, elt_type) = Self::length_type(bytes).unwrap();
-        match elt_type {
+        let (length_bytes, delimiter) = Self::length_type(bytes).unwrap();
+        match P::decode(delimiter, length_bytes, bytes) {
+            Ok((ext, rem)) => {
+                return Ok((Element::Extension(ext), rem));
+            }
+            Err(DecodeError::UnknownType(_)) => {}
+            Err(err) => {
+                return Err(err);
+            }
+        };
+        match delimiter {
             0x81 => {
                 Ok((
                     Element::Integer(Self::dec_posint(length_bytes)? as i32),
@@ -154,7 +185,7 @@ impl Element {
                     &bytes[9..],
                 ))
             }
-            _ => Err(DecodeError::UnknownType),
+            other => Err(DecodeError::UnknownType(other)),
         }
     }
 
@@ -183,6 +214,15 @@ impl Element {
     }
 }
 
+impl Profile for NoneProfile {
+    fn decode<'a>(
+        delimiter: u8,
+        _p: &'a [u8],
+        _f: &'a [u8],
+    ) -> Result<(Self, &'a [u8]), DecodeError> {
+        Err(DecodeError::UnknownType(delimiter))
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -190,8 +230,8 @@ mod tests {
 
     #[test]
     fn length_type() {
-        assert!(Element::length_type("".as_bytes()).is_err());
-        assert_eq!(Element::length_type(&[0x42, 0x24, 0x82, 0x01]).unwrap(), (
+        assert!(Banana::length_type("".as_bytes()).is_err());
+        assert_eq!(Banana::length_type(&[0x42, 0x24, 0x82, 0x01]).unwrap(), (
             &[0x42 as u8, 0x24 as u8] as &[u8],
             0x82 as u8,
         ));
@@ -200,22 +240,22 @@ mod tests {
     #[test]
     fn decode_integers() {
         let bytes: &[u8] = &[0x12, 0x34, 0x81];
-        assert_eq!(Element::from_bytes(&bytes), Ok(Element::Integer(6674)));
+        assert_eq!(Banana::from_bytes(&bytes), Ok(Element::Integer(6674)));
         let bytes: &[u8] = &[0x7f, 0x7f, 0x7f, 0x7f, 0x07, 0x81];
         assert_eq!(
-            Element::from_bytes(&bytes),
+            Banana::from_bytes(&bytes),
             Ok(Element::Integer(i32::max_value()))
         );
         let bytes: &[u8] = &[0x00, 0x00, 0x00, 0x00, 0x08, 0x81];
         assert_eq!(
-            Element::from_bytes(&bytes),
+            Banana::from_bytes(&bytes),
             Err(DecodeError::OverFlow(vec![0, 0, 0, 0, 8]))
         );
         let bytes: &[u8] = &[0x12, 0x34, 0x83];
-        assert_eq!(Element::from_bytes(&bytes), Ok(Element::Integer(-6674)));
+        assert_eq!(Banana::from_bytes(&bytes), Ok(Element::Integer(-6674)));
         let bytes: &[u8] = &[0x00, 0x00, 0x00, 0x00, 0x08, 0x83];
         assert_eq!(
-            Element::from_bytes(&bytes),
+            Banana::from_bytes(&bytes),
             Ok(Element::Integer(i32::min_value()))
         );
     }
@@ -224,14 +264,11 @@ mod tests {
     fn decode_string() {
         let bytes: &[u8] = &[0x03, 0x82, b'b', b'a', b'n'];
         assert_eq!(
-            Element::from_bytes(&bytes),
+            Banana::from_bytes(&bytes),
             Ok(Element::String(String::from("ban").into_bytes()))
         );
         let bytes: &[u8] = &[0x04, 0x82, b'b', b'a', b'n'];
-        assert_eq!(
-            Element::from_bytes(&bytes),
-            Err(DecodeError::TooShort(4, 3))
-        );
+        assert_eq!(Banana::from_bytes(&bytes), Err(DecodeError::TooShort(4, 3)));
     }
 
     #[test]
@@ -239,24 +276,21 @@ mod tests {
         // example from https://en.wikipedia.org/wiki/Double-precision_floating-point_format
         // with ignored extra content at the end
         let bytes: &[u8] = &[0x84, 0x40, 0x37, 0, 0, 0, 0, 0, 0, 12, 12];
-        assert_eq!(Element::from_bytes(&bytes), Ok(Element::Float(23 as f64)));
+        assert_eq!(Banana::from_bytes(&bytes), Ok(Element::Float(23 as f64)));
         let bytes: &[u8] = &[0x84, 0x3f, 0xf8];
-        assert_eq!(
-            Element::from_bytes(&bytes),
-            Err(DecodeError::TooShort(9, 3))
-        );
+        assert_eq!(Banana::from_bytes(&bytes), Err(DecodeError::TooShort(9, 3)));
     }
 
     #[test]
     fn decode_list() {
         let bytes: &[u8] = &[0x02, 0x80, 0x02, 0x81, 0x03, 0x83];
         assert_eq!(
-            Element::from_bytes(&bytes).unwrap(),
+            Banana::from_bytes(&bytes).unwrap(),
             Element::List(vec![Element::Integer(2), Element::Integer(-3)])
         );
         let bytes: &[u8] = &[0x80];
         assert_eq!(
-            Element::from_bytes(&bytes),
+            Banana::from_bytes(&bytes),
             Err(DecodeError::Invalid("List without a length".into()))
         );
     }
@@ -266,28 +300,28 @@ mod tests {
     fn spec_examples() {
         // integer
         let bytes: &[u8] = &[0x01, 0x81];
-        assert_eq!(Element::from_bytes(&bytes).unwrap(), Element::Integer(1));
+        assert_eq!(Banana::from_bytes(&bytes).unwrap(), Element::Integer(1));
 
         let bytes: &[u8] = &[0x01, 0x83];
-        assert_eq!(Element::from_bytes(&bytes).unwrap(), Element::Integer(-1));
+        assert_eq!(Banana::from_bytes(&bytes).unwrap(), Element::Integer(-1));
 
         // float
         let bytes: &[u8] = &[0x84, 0x3f, 0xf8, 0, 0, 0, 0, 0, 0];
-        assert_eq!(Element::from_bytes(&bytes).unwrap(), Element::Float(1.5));
+        assert_eq!(Banana::from_bytes(&bytes).unwrap(), Element::Float(1.5));
 
         // string
         let bytes: &[u8] = &[0x05, 0x82, 0x68, 0x65, 0x6c, 0x6c, 0x6f];
         assert_eq!(
-            Element::from_bytes(&bytes).unwrap(),
+            Banana::from_bytes(&bytes).unwrap(),
             Element::String(String::from("hello").into_bytes())
         );
 
         // lists
         let bytes: &[u8] = &[0, 0x80];
-        assert_eq!(Element::from_bytes(&bytes).unwrap(), Element::List(vec![]));
+        assert_eq!(Banana::from_bytes(&bytes).unwrap(), Element::List(vec![]));
         let bytes: &[u8] = &[2, 0x80, 0x01, 0x81, 0x17, 0x81];
         assert_eq!(
-            Element::from_bytes(&bytes).unwrap(),
+            Banana::from_bytes(&bytes).unwrap(),
             Element::List(vec![Element::Integer(1), Element::Integer(23)])
         );
         let bytes: &[u8] = &[
@@ -306,7 +340,7 @@ mod tests {
             0x6f,
         ];
         assert_eq!(
-            Element::from_bytes(&bytes).unwrap(),
+            Banana::from_bytes(&bytes).unwrap(),
             Element::List(vec![
                 Element::Integer(1),
                 Element::List(vec![
@@ -316,4 +350,61 @@ mod tests {
         );
     }
 
+    type TestProfile = Option<u8>;
+    type TestProto = Element<TestProfile>;
+
+    impl Profile for TestProfile {
+        fn decode<'a>(
+            delimiter: u8,
+            preamble: &'a [u8],
+            full_msg: &'a [u8],
+        ) -> Result<(TestProfile, &'a [u8]), DecodeError> {
+            if delimiter != 0xff {
+                return Err(DecodeError::UnknownType(delimiter));
+            }
+            let rem = match full_msg.get(2..) {
+                None => &[],
+                Some(sl) => sl,
+            };
+            match preamble.len() {
+                0 => Ok((None, rem)),
+                1 => Ok((Some(preamble[0]), rem)),
+                _ => Err(DecodeError::Invalid("Invalid length".into())),
+            }
+        }
+    }
+
+    #[test]
+    fn with_profile() {
+        let bytes: &[u8] = &[b'a', 0xff];
+        assert_eq!(
+            TestProto::from_bytes(&bytes).unwrap(),
+            Element::Extension(Some(b'a'))
+        );
+
+        let bytes: &[u8] = &[0xff];
+        assert_eq!(
+            TestProto::from_bytes(&bytes).unwrap(),
+            Element::Extension(None)
+        );
+
+        let bytes: &[u8] = &[b'a', 0xfe];
+        assert_eq!(
+            TestProto::from_bytes(&bytes),
+            Err(DecodeError::UnknownType(0xfe))
+        );
+
+        let bytes: &[u8] = &[0x01, 0x02, 0xff];
+        assert!(match TestProto::from_bytes(&bytes) {
+            Err(DecodeError::Invalid(_)) => true,
+            _ => false,
+        });
+
+        // recursion into vanilla Banana
+        let bytes: &[u8] = &[2, 0x80, b'%', 0xff, 127, 0x81];
+        assert_eq!(
+            TestProto::from_bytes(&bytes).unwrap(),
+            Element::List(vec![Element::Extension(Some(b'%')), Element::Integer(127)])
+        );
+    }
 }

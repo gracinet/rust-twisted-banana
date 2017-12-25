@@ -2,6 +2,9 @@
 
 use std::mem::transmute;
 
+mod pb;
+pub use pb::PerspectiveBroker;
+
 /// Represent Banana extension profiles
 pub trait Profile: Sized {
     /// Attempt to decode as an extension element.

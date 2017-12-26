@@ -7,5 +7,5 @@
 mod banana;
 mod pb;
 
-pub use banana::{Profile, DecodeError, Banana, Element};
-pub use pb::PerspectiveBroker;
+pub use banana::{Profile, DecodeError, Banana, Element, NoneProfile};
+pub use pb::{PerspectiveBroker, PB};

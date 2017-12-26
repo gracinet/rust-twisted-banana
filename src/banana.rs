@@ -113,6 +113,10 @@ impl<P: Profile> Element<P> {
         Ok(full_msg[start..end].into())
     }
 
+    /// Decode a float.
+    ///
+    /// spec example is given in big-endian order (IEEE 754 itself does not specify endianness).
+    /// TODO confirm by reading reference implementation
     fn dec_float(length_bytes: &[u8], full_msg: &[u8]) -> Result<f64, DecodeError> {
         if length_bytes.len() != 0 {
             return Err(DecodeError::Invalid(format!(
@@ -123,10 +127,7 @@ impl<P: Profile> Element<P> {
         if full_msg.len() < 9 {
             return Err(DecodeError::TooShort(9, full_msg.len()));
         }
-        // TODO spec example is given in big-endian order (IEEE 754 does
-        // not specify endianness). We assume platform is little-endian
-        // (ermh amd64 here).
-        Ok(unsafe {
+        let le: u64 = unsafe {
             transmute(
                 [
                     full_msg[8],
@@ -139,7 +140,20 @@ impl<P: Profile> Element<P> {
                     full_msg[1],
                 ],
             )
-        })
+        };
+        Ok(f64::from_bits(u64::from_le(le)))
+    }
+
+    /// Encode a float in given vector.
+    ///
+    /// spec example is given in big-endian order (IEEE 754 itself does not specify endianness).
+    /// TODO confirm by reading reference implementation
+    fn enc_float(v: &mut Vec<u8>, f: f64) {
+        let bits = f.to_bits();
+        let be = bits.to_be();
+        let ar: [u8; 8] = unsafe { transmute(be) };
+        v.push(0x84);
+        v.extend(&ar);
     }
 
     /// Decode an element, incuding length marker,
@@ -266,11 +280,13 @@ impl<P: Profile> Element<P> {
                 Self::enc_uint(v, s.len() as u32);
                 v.push(0x82);
                 v.extend(s);
-            },
+            }
             Element::Extension(ref p) => {
                 p.encode(v);
-            },
-            _ => panic!("not implemented"),
+            }
+            Element::Float(f) => {
+                Self::enc_float(v, f);
+            }
         }
     }
 }
@@ -364,6 +380,14 @@ mod tests {
         assert_eq!(Banana::from_bytes(&bytes), Ok(Element::Float(23 as f64)));
         let bytes: &[u8] = &[0x84, 0x3f, 0xf8];
         assert_eq!(Banana::from_bytes(&bytes), Err(DecodeError::TooShort(9, 3)));
+    }
+
+    #[test]
+    fn encode_float() {
+        // example from https://en.wikipedia.org/wiki/Double-precision_floating-point_format
+        // with ignored extra content at the end
+        let elt: Banana = Element::Float(23 as f64);
+        assert_eq!(&elt.encode(), &[0x84, 0x40, 0x37, 0, 0, 0, 0, 0, 0]);
     }
 
     #[test]

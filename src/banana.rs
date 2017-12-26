@@ -1,3 +1,5 @@
+use std::fmt;
+use std::str;
 use std::mem::transmute;
 
 /// The absolute value, as u32 of i32's min value (cannot be represented as a i32)
@@ -291,6 +293,33 @@ impl<P: Profile> Element<P> {
     }
 }
 
+impl<P: Profile + fmt::Display> fmt::Display for Element<P> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Element::Integer(i) => write!(f, "{}", i),
+            Element::Float(fl) => write!(f, "{}", fl),
+            Element::List(ref l) => {
+                write!(f, "[")?;
+                if !l.is_empty() {
+                    let len = l.len();
+                    for elt in l[0..len - 1].iter() {
+                        write!(f, "{}, ", elt)?;
+                    }
+                    write!(f, "{}", l[len - 1])?;
+                }
+                write!(f, "]")
+            }
+            Element::String(ref s) => {
+                match str::from_utf8(s) {
+                    Ok(ref ser) => write!(f, "b\"{}\"", ser),
+                    Err(_) => write!(f, "{:?}", s),  // Debug of Vec<u8> is good enough for now
+                }
+            }
+            Element::Extension(ref p) => write!(f, "{}", p),
+        }
+    }
+}
+
 impl Profile for NoneProfile {
     fn decode<'a>(
         delimiter: u8,
@@ -301,6 +330,12 @@ impl Profile for NoneProfile {
     }
 
     fn encode(&self, _v: &mut Vec<u8>) {}
+}
+
+impl fmt::Display for NoneProfile {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "")
+    }
 }
 
 #[cfg(test)]
@@ -411,6 +446,38 @@ mod tests {
     }
 
     #[test]
+    fn display_int() {
+        assert_eq!(format!("{}", Element::Integer(123) as Banana), "123");
+    }
+
+    #[test]
+    fn display_float() {
+        assert_eq!(format!("{}", Element::Float(1.23) as Banana), "1.23");
+    }
+
+    #[test]
+    fn display_list() {
+        assert_eq!(
+            format!(
+                "{}",
+                Element::List(vec![Element::Integer(123), Element::Float(-1.3)]) as Banana
+            ),
+            "[123, -1.3]"
+        );
+    }
+
+    #[test]
+    fn display_string() {
+        assert_eq!(
+            format!(
+                "{}",
+                Element::String(String::from("foo").into_bytes()) as Banana
+            ),
+            "b\"foo\""
+        );
+    }
+
+    #[test]
     /// Examples from the banana spec
     fn spec_examples() {
         // integer
@@ -465,8 +532,24 @@ mod tests {
         );
     }
 
-    type TestProfile = Option<u8>;
+    // encapsulation so that we can implement Display and other traits not defined here
+    #[derive(Debug, PartialEq)]
+    struct TestProfile {
+        contents: Option<u8>,
+    }
+
     type TestProto = Element<TestProfile>;
+
+    /// syntactic sugars
+    impl TestProfile {
+        fn some(val: u8) -> TestProfile {
+            TestProfile { contents: Some(val) }
+        }
+
+        fn none() -> TestProfile {
+            TestProfile { contents: None }
+        }
+    }
 
     impl Profile for TestProfile {
         fn decode<'a>(
@@ -482,14 +565,14 @@ mod tests {
                 Some(sl) => sl,
             };
             match preamble.len() {
-                0 => Ok((None, rem)),
-                1 => Ok((Some(preamble[0]), rem)),
+                0 => Ok((TestProfile { contents: None }, rem)),
+                1 => Ok((TestProfile { contents: Some(preamble[0]) }, rem)),
                 _ => Err(DecodeError::Invalid("Invalid length".into())),
             }
         }
 
         fn encode(&self, v: &mut Vec<u8>) {
-            if let Some(u) = *self {
+            if let Some(u) = self.contents {
                 v.push(u);
             }
             v.push(0xff);
@@ -501,13 +584,13 @@ mod tests {
         let bytes: &[u8] = &[b'a', 0xff];
         assert_eq!(
             TestProto::from_bytes(&bytes).unwrap(),
-            Element::Extension(Some(b'a'))
+            Element::Extension(TestProfile::some(b'a'))
         );
 
         let bytes: &[u8] = &[0xff];
         assert_eq!(
             TestProto::from_bytes(&bytes).unwrap(),
-            Element::Extension(None)
+            Element::Extension(TestProfile::none())
         );
 
         let bytes: &[u8] = &[b'a', 0xfe];
@@ -526,16 +609,38 @@ mod tests {
         let bytes: &[u8] = &[2, 0x80, b'%', 0xff, 127, 0x81];
         assert_eq!(
             TestProto::from_bytes(&bytes).unwrap(),
-            Element::List(vec![Element::Extension(Some(b'%')), Element::Integer(127)])
+            Element::List(vec![
+                Element::Extension(TestProfile::some(b'%')),
+                Element::Integer(127),
+            ])
         );
     }
 
     #[test]
     fn encode_with_profile() {
-        let elt: TestProto =
-            Element::List(vec![Element::Integer(2), Element::Extension(Some(b'-'))]);
+        let elt: TestProto = Element::List(vec![
+            Element::Integer(2),
+            Element::Extension(TestProfile::some(b'-')),
+        ]);
         assert_eq!(&elt.encode(), &[0x02, 0x80, 0x02, 0x81, b'-', 0xff]);
 
     }
+
+    impl fmt::Display for TestProfile {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(f, "{:?}", self.contents)
+        }
+    }
+
+
+    #[test]
+    fn display_with_profile() {
+        let elt: TestProto = Element::List(vec![
+            Element::Integer(2),
+            Element::Extension(TestProfile::some(57)),
+        ]);
+        assert_eq!(format!("{}", elt), "[2, Some(57)]");
+    }
+
 
 }

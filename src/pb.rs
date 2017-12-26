@@ -1,6 +1,7 @@
 /// Perspective Broker message protocol
 /// According to the specifications, this is an extension profile of the Banana protocol
 
+use std::fmt;
 use super::{Profile, DecodeError, Element};
 
 pub type PerspectiveBroker = Element<PB>;
@@ -138,6 +139,14 @@ impl Profile for PB {
     }
 }
 
+impl fmt::Display for PB {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        // Debug formatting is quite satisfactory to be the Display of this type
+        write!(f, "{:?}", self)
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,6 +154,7 @@ mod tests {
     #[test]
     /// Real-life session start from a buildbot-worker speaking to the master
     /// (just after selecting pb profile)
+    /// Testing decoding, encoding and display
     fn pb_session() {
         let bytes: &[u8] = &[0x02, 0x80, 0x13, 0x87, 0x06, 0x81];
         assert_eq!(
@@ -187,8 +197,9 @@ mod tests {
             0x05,
             0x87,
         ];
+        let decoded = PerspectiveBroker::from_bytes(bytes).unwrap();
         assert_eq!(
-            PerspectiveBroker::from_bytes(bytes).unwrap(),
+            decoded,
             Element::List(vec![
                 Element::Extension(PB::Message),
                 Element::Integer(1),
@@ -204,6 +215,13 @@ mod tests {
                 Element::List(vec![Element::Extension(PB::Dictionary)]),
             ])
         );
+
+        assert_eq!(decoded.encode(), bytes);
+
+        assert_eq!(
+            format!("{}", decoded),
+            "[Message, 1, b\"root\", Login, 1, [Tuple, b\"antares2\"], [Dictionary]]"
+        );
     }
 
     #[test]
@@ -211,4 +229,5 @@ mod tests {
         let elt: PerspectiveBroker = Element::Extension(PB::Dictionary);
         assert_eq!(elt.encode(), vec![5, 0x87]);
     }
+
 }

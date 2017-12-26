@@ -99,6 +99,43 @@ impl Profile for PB {
         ))
 
     }
+
+    fn encode(&self, v: &mut Vec<u8>) {
+        v.push(match *self {
+            PB::None => 0x01,
+            PB::Class => 0x02,
+            PB::DeReference => 0x03,
+            PB::Reference => 0x04,
+            PB::Dictionary => 0x05,
+            PB::Function => 0x06,
+            PB::Instance => 0x07,
+            PB::List => 0x08,
+            PB::Module => 0x09,
+            PB::Persistent => 0x0a,
+            PB::Tuple => 0x0b,
+            PB::UnPersistable => 0x0c,
+            PB::Copy => 0x0b,
+            PB::Cache => 0x0e,
+            PB::Cached => 0x0f,
+            PB::Remote => 0x10,
+            PB::Local => 0x11,
+            PB::LCache => 0x12,
+            PB::Version => 0x13,
+            PB::Login => 0x14,
+            PB::Password => 0x15,
+            PB::Challenge => 0x16,
+            PB::LoggedIn => 0x17,
+            PB::NotLoggedIn => 0x18,
+            PB::CacheMessage => 0x19,
+            PB::Message => 0x1a,
+            PB::Answer => 0x1b,
+            PB::Error => 0x1c,
+            PB::DecRef => 0x1d,
+            PB::DeCache => 0x1e,
+            PB::UnCache => 0x1f,
+        });
+        v.push(0x87);
+    }
 }
 
 #[cfg(test)]
@@ -167,5 +204,11 @@ mod tests {
                 Element::List(vec![Element::Extension(PB::Dictionary)]),
             ])
         );
+    }
+
+    #[test]
+    fn basic_encode() {
+        let elt: PerspectiveBroker = Element::Extension(PB::Dictionary);
+        assert_eq!(elt.encode(), vec![5, 0x87]);
     }
 }

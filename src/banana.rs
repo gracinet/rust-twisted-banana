@@ -1,5 +1,8 @@
 use std::mem::transmute;
 
+/// The absolute value, as u32 of i32's min value (cannot be represented as a i32)
+const ABSMIN32: u32 = 1 << 31;
+
 /// Represent Banana extension profiles
 pub trait Profile: Sized {
     /// Attempt to decode as an extension element.
@@ -10,6 +13,8 @@ pub trait Profile: Sized {
         preamble: &'a [u8],
         full_msg: &'a [u8],
     ) -> Result<(Self, &'a [u8]), DecodeError>;
+
+    fn encode(&self, v: &mut Vec<u8>);
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -210,6 +215,64 @@ impl<P: Profile> Element<P> {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, DecodeError> {
         Ok(Self::from_bytes_rem(bytes)?.0)
     }
+
+    /// Raw encoding for an unsigned integer. Can be used as a length or as a direct value
+    fn enc_uint(v: &mut Vec<u8>, i: u32) {
+        let mut j = i;
+        while j > 127 {
+            v.push((j % 128) as u8);
+            j = j >> 7;
+        }
+        v.push(j as u8);
+    }
+
+    fn enc_int(v: &mut Vec<u8>, i: i32) {
+        if i >= 0 {
+            Self::enc_uint(v, i as u32);
+            v.push(0x81);
+        } else {
+            if i == i32::min_value() {
+                Self::enc_uint(v, ABSMIN32);
+            } else {
+                Self::enc_uint(v, -i as u32);
+            }
+            v.push(0x83);
+        }
+    }
+
+    fn enc_list(v: &mut Vec<u8>, l: &Vec<Self>) {
+        Self::enc_uint(v, l.len() as u32);
+        v.push(0x80);
+        for elt in l {
+            elt.encode_in(v);
+        }
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut res: Vec<u8> = Vec::new();
+        self.encode_in(&mut res);
+        res
+    }
+
+    pub fn encode_in(&self, v: &mut Vec<u8>) {
+        match *self {
+            Element::Integer(i) => {
+                Self::enc_int(v, i);
+            }
+            Element::List(ref l) => {
+                Self::enc_list(v, l);
+            }
+            Element::String(ref s) => {
+                Self::enc_uint(v, s.len() as u32);
+                v.push(0x82);
+                v.extend(s);
+            },
+            Element::Extension(ref p) => {
+                p.encode(v);
+            },
+            _ => panic!("not implemented"),
+        }
+    }
 }
 
 impl Profile for NoneProfile {
@@ -220,6 +283,8 @@ impl Profile for NoneProfile {
     ) -> Result<(Self, &'a [u8]), DecodeError> {
         Err(DecodeError::UnknownType(delimiter))
     }
+
+    fn encode(&self, _v: &mut Vec<u8>) {}
 }
 
 #[cfg(test)]
@@ -259,6 +324,22 @@ mod tests {
     }
 
     #[test]
+    fn encode_integers() {
+        let elt: Banana = Element::Integer(12);
+        assert_eq!(&elt.encode(), &[0x0c, 0x81]);
+
+        let elt: Banana = Element::Integer(6674);
+        assert_eq!(&elt.encode(), &[0x12, 0x34, 0x81]);
+
+        let elt: Banana = Element::Integer(-6674);
+        assert_eq!(&elt.encode(), &[0x12, 0x34, 0x83]);
+
+        let elt: Banana = Element::Integer(i32::min_value());
+        assert_eq!(&elt.encode(), &[0x00, 0x00, 0x00, 0x00, 0x08, 0x83]);
+    }
+
+
+    #[test]
     fn decode_string() {
         let bytes: &[u8] = &[0x03, 0x82, b'b', b'a', b'n'];
         assert_eq!(
@@ -267,6 +348,12 @@ mod tests {
         );
         let bytes: &[u8] = &[0x04, 0x82, b'b', b'a', b'n'];
         assert_eq!(Banana::from_bytes(&bytes), Err(DecodeError::TooShort(4, 3)));
+    }
+
+    #[test]
+    fn encode_string() {
+        let elt: Banana = Element::String(String::from("ban").into_bytes());
+        assert_eq!(&elt.encode(), &[0x03, 0x82, b'b', b'a', b'n']);
     }
 
     #[test]
@@ -291,6 +378,12 @@ mod tests {
             Banana::from_bytes(&bytes),
             Err(DecodeError::Invalid("List without a length".into()))
         );
+    }
+
+    #[test]
+    fn encode_list() {
+        let elt: Banana = Element::List(vec![Element::Integer(2), Element::Integer(-3)]);
+        assert_eq!(&elt.encode(), &[0x02, 0x80, 0x02, 0x81, 0x03, 0x83]);
     }
 
     #[test]
@@ -370,10 +463,17 @@ mod tests {
                 _ => Err(DecodeError::Invalid("Invalid length".into())),
             }
         }
+
+        fn encode(&self, v: &mut Vec<u8>) {
+            if let Some(u) = *self {
+                v.push(u);
+            }
+            v.push(0xff);
+        }
     }
 
     #[test]
-    fn with_profile() {
+    fn decode_with_profile() {
         let bytes: &[u8] = &[b'a', 0xff];
         assert_eq!(
             TestProto::from_bytes(&bytes).unwrap(),
@@ -405,4 +505,13 @@ mod tests {
             Element::List(vec![Element::Extension(Some(b'%')), Element::Integer(127)])
         );
     }
+
+    #[test]
+    fn encode_with_profile() {
+        let elt: TestProto =
+            Element::List(vec![Element::Integer(2), Element::Extension(Some(b'-'))]);
+        assert_eq!(&elt.encode(), &[0x02, 0x80, 0x02, 0x81, b'-', 0xff]);
+
+    }
+
 }
